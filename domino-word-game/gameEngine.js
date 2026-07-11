@@ -1,0 +1,314 @@
+// gameEngine.js
+// เอนจินหลักของเกม "โดมิโนคำประสม-คำซ้อน" — server-authoritative
+// ทุกกฎอ้างอิงจากการคุยยืนยันกับผู้ใช้ (Ramin) เมื่อ 2026-07-12
+
+const fs = require('fs');
+const path = require('path');
+
+const WORDBANK = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'data', 'wordbank.json'), 'utf-8')
+);
+
+const TURN_SECONDS = 30;
+const START_HAND_SIZE = 10;
+const MAX_HAND_SIZE = 15; // ครบ 15 = แพ้ (ถูกคัดออก)
+const MAX_TEAMS = 10;
+const PODIUM_SIZE = 3; // จบเกมเมื่อหาที่ 1-2-3 ได้ครบ
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function tileById(id) {
+  return WORDBANK.find((t) => t.id === id);
+}
+
+class GameRoom {
+  constructor(code) {
+    this.code = code;
+    this.status = 'lobby'; // lobby -> playing -> podium
+    this.teams = []; // { id, name, hand:[tileId], eliminated:bool, rank:null }
+    this.turnOrder = []; // team ids ในลำดับ round-robin
+    this.currentTurnIndex = 0;
+    this.drawPile = [];
+    this.chain = []; // { tileId, orientation, slotType, teamId }
+    this.openEnd = null; // syllable ที่เปิดอยู่ หรือ 'ANY' ถ้าเพิ่งลง BLANK
+    this.podium = []; // team ids เรียงอันดับ 1,2,3
+    this.turnEndsAt = null;
+    this.turnTimer = null;
+    this._onUpdate = null; // callback(room) เรียกทุกครั้งที่ state เปลี่ยน เพื่อ broadcast
+  }
+
+  onUpdate(fn) {
+    this._onUpdate = fn;
+  }
+
+  emitUpdate(event, payload) {
+    if (this._onUpdate) this._onUpdate(this, event, payload);
+  }
+
+  addTeam(name) {
+    if (this.status !== 'lobby') throw new Error('เกมเริ่มไปแล้ว เข้าร่วมไม่ได้');
+    if (this.teams.length >= MAX_TEAMS) throw new Error('ทีมเต็มแล้ว (สูงสุด 10 ทีม)');
+    const id = 'team_' + Math.random().toString(36).slice(2, 9);
+    const team = { id, name, hand: [], eliminated: false, rank: null };
+    this.teams.push(team);
+    this.emitUpdate('lobbyUpdate');
+    return team;
+  }
+
+  startGame() {
+    if (this.status !== 'lobby') throw new Error('เกมเริ่มไปแล้ว');
+    if (this.teams.length < 2) throw new Error('ต้องมีอย่างน้อย 2 ทีมถึงจะเริ่มได้');
+
+    const allIds = shuffle(WORDBANK.map((t) => t.id));
+    const nonBlankIds = allIds.filter((id) => tileById(id).type !== 'BLANK');
+
+    // 1. สุ่มคำตั้งต้นจากกองกลาง (ต้องไม่ใช่ BLANK) แยกออกจากกองที่จะแจก
+    const startTileId = nonBlankIds[0];
+    const pool = allIds.filter((id) => id !== startTileId);
+
+    this.chain = [
+      { tileId: startTileId, orientation: 'normal', slotType: tileById(startTileId).type, teamId: null },
+    ];
+    this.openEnd = tileById(startTileId).syllables[1];
+
+    // 2. แจกมือเริ่มต้นทีมละ 10 ใบ จากกองที่เหลือ
+    let idx = 0;
+    for (const team of this.teams) {
+      team.hand = pool.slice(idx, idx + START_HAND_SIZE);
+      idx += START_HAND_SIZE;
+    }
+    this.drawPile = pool.slice(idx);
+
+    // 3. สุ่มทีมเริ่มต้น จากนั้นวนตามลำดับทีม (round-robin)
+    this.turnOrder = this.teams.map((t) => t.id);
+    this.currentTurnIndex = Math.floor(Math.random() * this.turnOrder.length);
+
+    this.status = 'playing';
+    this.startTurnTimer();
+    this.emitUpdate('gameStarted');
+  }
+
+  get activeTeams() {
+    return this.teams.filter((t) => !t.eliminated && t.rank === null);
+  }
+
+  currentTeam() {
+    const id = this.turnOrder[this.currentTurnIndex];
+    return this.teams.find((t) => t.id === id);
+  }
+
+  startTurnTimer() {
+    this.clearTurnTimer();
+    this.turnEndsAt = Date.now() + TURN_SECONDS * 1000;
+    this.turnTimer = setTimeout(() => this.handleTimeout(), TURN_SECONDS * 1000);
+    this.emitUpdate('turnStart', { teamId: this.currentTeam()?.id, endsAt: this.turnEndsAt });
+  }
+
+  clearTurnTimer() {
+    if (this.turnTimer) clearTimeout(this.turnTimer);
+    this.turnTimer = null;
+  }
+
+  drawFromPile() {
+    if (this.drawPile.length === 0) return null;
+    return this.drawPile.pop();
+  }
+
+  // หมดเวลา 30 วิ โดยยังไม่ลงคำ -> บังคับจั่ว 1 ใบเป็นโทษ จบเทิร์นทันที ไม่มีโอกาสลง
+  handleTimeout() {
+    if (this.status !== 'playing') return;
+    const team = this.currentTeam();
+    if (!team) return;
+    if (team.hand.length >= MAX_HAND_SIZE) {
+      // ถาดเต็มอยู่แล้ว ไม่มีที่ใส่เบี้ยโทษ -> แพ้
+      this.eliminateForFullTray(team);
+      return;
+    }
+    const drawn = this.drawFromPile();
+    if (drawn !== null) team.hand.push(drawn);
+    this.emitUpdate('timeoutPenalty', { teamId: team.id, drawnTileId: drawn });
+    this.advanceTurn();
+  }
+
+  // ผู้เล่นกดจั่วเองระหว่างเทิร์น (ทางตัน) - ไม่ใช่โทษ นาฬิกาเดินต่อรวม 30 วิ ไม่รีเซ็ต
+  // ถาดมี 15 ช่อง: ถ้าถาดเต็มอยู่แล้ว (15) และยังต้องจั่วอีก แปลว่าจนตรอกจริง ๆ -> แพ้ทันที
+  // แต่ถ้าจั่วแล้วพอดีทำให้ครบ 15 (ยังไม่เกิน) ทีมยังลงคำจากมือ 15 ใบนั้นได้ตามปกติ ไม่ถือว่าแพ้ทันที
+  voluntaryDraw(teamId) {
+    this.assertTurn(teamId);
+    const team = this.currentTeam();
+    if (team.hand.length >= MAX_HAND_SIZE) {
+      // ถาดเต็มอยู่แล้วและยังจนตรอก -> แพ้
+      this.eliminateForFullTray(team);
+      return null;
+    }
+    const drawn = this.drawFromPile();
+    if (drawn === null) throw new Error('กองกลางหมดแล้ว');
+    team.hand.push(drawn);
+    this.emitUpdate('voluntaryDraw', { teamId, drawnTileId: drawn });
+    return drawn;
+  }
+
+  // ใช้ตอนทีมต้องจั่ว (โทษ หรือ จั่วเอง) แต่ถาด 15 ช่องเต็มอยู่แล้ว ไม่มีที่ใส่ -> แพ้/ถูกคัดออก
+  eliminateForFullTray(team) {
+    team.eliminated = true;
+    this.emitUpdate('teamEliminated', { teamId: team.id, reason: 'tray_full' });
+    if (this.activeTeams.length === 0) {
+      this.endGame();
+    } else {
+      this.advanceTurn();
+    }
+  }
+
+  assertTurn(teamId) {
+    if (this.status !== 'playing') throw new Error('เกมยังไม่เริ่มหรือจบไปแล้ว');
+    const team = this.currentTeam();
+    if (!team || team.id !== teamId) throw new Error('ยังไม่ถึงตาทีมนี้');
+  }
+
+  // พยายามลงคำ: { teamId, tileId, slotType }
+  playTile(teamId, tileId, slotType) {
+    this.assertTurn(teamId);
+    const team = this.currentTeam();
+    if (!team.hand.includes(tileId)) throw new Error('ทีมนี้ไม่มีคำนี้ในมือ');
+
+    const tile = tileById(tileId);
+    const isBlank = tile.type === 'BLANK';
+
+    let orientation = 'normal';
+    let matchOk = false;
+
+    if (this.openEnd === 'ANY') {
+      // ปลายเปิดจาก BLANK ก่อนหน้า -> ลงคำอะไรก็ได้ (ไม่ต้องตรงพยางค์)
+      matchOk = true;
+      if (!isBlank) orientation = 'normal';
+    } else if (isBlank) {
+      matchOk = true; // BLANK ลงได้ตลอดไม่ต้องตรงพยางค์
+    } else {
+      if (tile.syllables[0] === this.openEnd) {
+        matchOk = true;
+        orientation = 'normal';
+      } else if (tile.syllables[1] === this.openEnd) {
+        matchOk = true;
+        orientation = 'flip';
+      }
+    }
+
+    // ตรวจช่อง: BLANK เลือกช่องไหนก็ได้ไม่โดนโทษ, คำจริงต้องตรงประเภท
+    const slotOk = isBlank || slotType === tile.type;
+
+    if (!matchOk || !slotOk) {
+      // ลงผิด -> เด้งกลับ (ไม่ถูกวาง) + โทษจั่วเพิ่ม 1 ใบ + จบเทิร์น
+      const reason = !matchOk ? 'syllable_mismatch' : 'wrong_slot';
+      if (team.hand.length >= MAX_HAND_SIZE) {
+        // ถาดเต็มอยู่แล้ว ไม่มีที่ใส่เบี้ยโทษ -> แพ้
+        this.emitUpdate('rejectedPlay', { teamId, tileId, reason, drawnTileId: null });
+        this.eliminateForFullTray(team);
+        return { accepted: false, reason };
+      }
+      const drawn = this.drawFromPile();
+      if (drawn !== null) team.hand.push(drawn);
+      this.emitUpdate('rejectedPlay', { teamId, tileId, reason, drawnTileId: drawn });
+      this.advanceTurn();
+      return { accepted: false, reason };
+    }
+
+    // ลงถูก
+    team.hand = team.hand.filter((id) => id !== tileId);
+    this.chain.push({ tileId, orientation, slotType: isBlank ? slotType : tile.type, teamId });
+    this.openEnd = isBlank ? 'ANY' : tile.syllables[orientation === 'normal' ? 1 : 0];
+
+    this.emitUpdate('acceptedPlay', { teamId, tileId, orientation, slotType });
+
+    if (team.hand.length === 0) {
+      this.finishTeam(team);
+      if (this.status === 'podium') return { accepted: true };
+    }
+
+    this.advanceTurn();
+    return { accepted: true };
+  }
+
+  finishTeam(team) {
+    team.rank = this.podium.length + 1;
+    this.podium.push(team.id);
+    this.emitUpdate('teamFinished', { teamId: team.id, rank: team.rank });
+    if (this.podium.length >= PODIUM_SIZE) {
+      this.endGame();
+    }
+  }
+
+  advanceTurn() {
+    if (this.status !== 'playing') return;
+    if (this.activeTeams.length === 0) {
+      this.endGame();
+      return;
+    }
+    let next = this.currentTurnIndex;
+    for (let i = 0; i < this.turnOrder.length; i++) {
+      next = (next + 1) % this.turnOrder.length;
+      const t = this.teams.find((t) => t.id === this.turnOrder[next]);
+      if (t && !t.eliminated && t.rank === null) {
+        this.currentTurnIndex = next;
+        this.startTurnTimer();
+        return;
+      }
+    }
+    this.endGame();
+  }
+
+  endGame() {
+    // ถ้าทีมที่เหลือถูกคัดออกหมดก่อนจะหาที่ 1-2-3 ได้ครบ (deadlock/โชคร้ายทั้งกระดาน)
+    // ให้จัดอันดับที่เหลือด้วยทีมที่มีเบี้ยในมือน้อยที่สุด (ใกล้ชนะที่สุด) เพื่อให้เกมจบแบบมีผลสรุปเสมอ
+    if (this.podium.length < PODIUM_SIZE) {
+      const unranked = this.teams
+        .filter((t) => t.rank === null)
+        .sort((a, b) => a.hand.length - b.hand.length);
+      for (const t of unranked) {
+        if (this.podium.length >= PODIUM_SIZE) break;
+        t.rank = this.podium.length + 1;
+        this.podium.push(t.id);
+      }
+    }
+    this.status = 'podium';
+    this.clearTurnTimer();
+    this.emitUpdate('gameEnded', { podium: this.podium });
+  }
+
+  publicState(forTeamId) {
+    return {
+      code: this.code,
+      status: this.status,
+      teams: this.teams.map((t) => ({
+        id: t.id,
+        name: t.name,
+        handCount: t.hand.length,
+        eliminated: t.eliminated,
+        rank: t.rank,
+      })),
+      currentTeamId: this.status === 'playing' ? (this.currentTeam() ? this.currentTeam().id : null) : null,
+      turnEndsAt: this.turnEndsAt,
+      chain: this.chain.map((c) => ({
+        tileId: c.tileId,
+        word: tileById(c.tileId).word,
+        type: tileById(c.tileId).type,
+        orientation: c.orientation,
+        slotType: c.slotType,
+      })),
+      openEnd: this.openEnd,
+      drawPileCount: this.drawPile.length,
+      podium: this.podium.map((id) => this.teams.find((t) => t.id === id)),
+      myHand: forTeamId
+        ? (this.teams.find((t) => t.id === forTeamId) ? this.teams.find((t) => t.id === forTeamId).hand : []).map((id) => tileById(id))
+        : undefined,
+    };
+  }
+}
+
+module.exports = { GameRoom, WORDBANK, TURN_SECONDS, START_HAND_SIZE, MAX_HAND_SIZE, MAX_TEAMS, PODIUM_SIZE };
