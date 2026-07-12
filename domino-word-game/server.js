@@ -85,6 +85,50 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('host:selectWordSet', ({ code, setId }, cb) => {
+    try {
+      const room = getRoomOrThrow(code);
+      room.selectWordSet(setId);
+      cb && cb({ ok: true });
+      broadcastRoom(room);
+    } catch (e) {
+      cb && cb({ ok: false, error: e.message });
+    }
+  });
+
+  socket.on('host:pauseGame', ({ code }, cb) => {
+    try {
+      const room = getRoomOrThrow(code);
+      room.pauseGame();
+      cb && cb({ ok: true });
+      broadcastRoom(room);
+    } catch (e) {
+      cb && cb({ ok: false, error: e.message });
+    }
+  });
+
+  socket.on('host:resumeGame', ({ code }, cb) => {
+    try {
+      const room = getRoomOrThrow(code);
+      room.resumeGame();
+      cb && cb({ ok: true });
+      broadcastRoom(room);
+    } catch (e) {
+      cb && cb({ ok: false, error: e.message });
+    }
+  });
+
+  socket.on('host:endGame', ({ code }, cb) => {
+    try {
+      const room = getRoomOrThrow(code);
+      room.forceEndGame();
+      cb && cb({ ok: true });
+      broadcastRoom(room);
+    } catch (e) {
+      cb && cb({ ok: false, error: e.message });
+    }
+  });
+
   // เผื่อ client ต้องการ state ล่าสุดแบบ request-response ตรง ๆ (เช่น เทสอัตโนมัติ)
   socket.on('room:getState', ({ code }, cb) => {
     try {

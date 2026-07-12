@@ -1,15 +1,16 @@
 // gameEngine.js
 // เอนจินหลักของเกม "โดมิโนคำประสม-คำซ้อน" — server-authoritative
 // ทุกกฎอ้างอิงจากการคุยยืนยันกับผู้ใช้ (Ramin) เมื่อ 2026-07-12
+// รองรับหลายชุดคำ (data/wordSets.json) เลือกได้ก่อนเริ่มเกม เพิ่มชุดใหม่ในอนาคตได้แค่เติมเข้าไปในไฟล์นั้น
 
 const fs = require('fs');
 const path = require('path');
 
-const WORDBANK = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'data', 'wordbank.json'), 'utf-8')
+const WORD_SETS = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'data', 'wordSets.json'), 'utf-8')
 );
 
-const TURN_SECONDS = 30;
+const TURN_SECONDS = 40;
 const START_HAND_SIZE = 10;
 const MAX_HAND_SIZE = 15; // ครบ 15 = แพ้ (ถูกคัดออก)
 const MAX_TEAMS = 10;
@@ -24,8 +25,9 @@ function shuffle(arr) {
   return a;
 }
 
-function tileById(id) {
-  return WORDBANK.find((t) => t.id === id);
+// เมทาดาต้าของชุดคำทั้งหมดที่มี (ไม่ส่ง tiles เต็มออกไปเพื่อให้ payload เบา) ใช้แสดงในหน้าเลือกชุดคำฝั่ง host
+function listWordSets() {
+  return WORD_SETS.map((s) => ({ id: s.id, name: s.name, tileCount: s.tiles.length }));
 }
 
 class GameRoom {
@@ -41,6 +43,10 @@ class GameRoom {
     this.podium = []; // team ids เรียงอันดับ 1,2,3
     this.turnEndsAt = null;
     this.turnTimer = null;
+    this.paused = false; // ครูกดพักเกม
+    this.pausedRemainingMs = null; // เวลาที่เหลืออยู่ ณ จังหวะที่กดพัก
+    this.wordSetId = WORD_SETS.length ? WORD_SETS[0].id : null; // ค่าเริ่มต้น: ชุดแรกที่มี ครูเปลี่ยนได้ก่อนกดเริ่มเกม
+    this.tiles = []; // เติมค่าตอน startGame() จากชุดคำที่เลือก
     this._onUpdate = null; // callback(room) เรียกทุกครั้งที่ state เปลี่ยน เพื่อ broadcast
   }
 
@@ -50,6 +56,19 @@ class GameRoom {
 
   emitUpdate(event, payload) {
     if (this._onUpdate) this._onUpdate(this, event, payload);
+  }
+
+  tileById(id) {
+    return this.tiles.find((t) => t.id === id);
+  }
+
+  // ครูเลือกชุดคำก่อนเริ่มเกม (เลือกใหม่ได้เรื่อย ๆ ตราบใดที่ยังไม่กดเริ่มเกม)
+  selectWordSet(setId) {
+    if (this.status !== 'lobby') throw new Error('เกมเริ่มไปแล้ว เปลี่ยนชุดคำไม่ได้');
+    const set = WORD_SETS.find((s) => s.id === setId);
+    if (!set) throw new Error('ไม่พบชุดคำนี้');
+    this.wordSetId = setId;
+    this.emitUpdate('lobbyUpdate');
   }
 
   addTeam(name) {
@@ -65,18 +84,22 @@ class GameRoom {
   startGame() {
     if (this.status !== 'lobby') throw new Error('เกมเริ่มไปแล้ว');
     if (this.teams.length < 2) throw new Error('ต้องมีอย่างน้อย 2 ทีมถึงจะเริ่มได้');
+    const set = WORD_SETS.find((s) => s.id === this.wordSetId);
+    if (!set) throw new Error('กรุณาเลือกชุดคำก่อนเริ่มเกม');
+    this.tiles = set.tiles;
 
-    const allIds = shuffle(WORDBANK.map((t) => t.id));
-    const nonBlankIds = allIds.filter((id) => tileById(id).type !== 'BLANK');
+    const allIds = shuffle(this.tiles.map((t) => t.id));
+    const nonBlankIds = allIds.filter((id) => this.tileById(id).type !== 'BLANK');
+    if (nonBlankIds.length === 0) throw new Error('ชุดคำนี้ไม่มีคำจริงเลย');
 
     // 1. สุ่มคำตั้งต้นจากกองกลาง (ต้องไม่ใช่ BLANK) แยกออกจากกองที่จะแจก
     const startTileId = nonBlankIds[0];
     const pool = allIds.filter((id) => id !== startTileId);
 
     this.chain = [
-      { tileId: startTileId, orientation: 'normal', slotType: tileById(startTileId).type, teamId: null },
+      { tileId: startTileId, orientation: 'normal', slotType: this.tileById(startTileId).type, teamId: null },
     ];
-    this.openEnd = tileById(startTileId).syllables[1];
+    this.openEnd = this.tileById(startTileId).syllables[1];
 
     // 2. แจกมือเริ่มต้นทีมละ 10 ใบ จากกองที่เหลือ
     let idx = 0;
@@ -116,14 +139,43 @@ class GameRoom {
     this.turnTimer = null;
   }
 
+  // ครูกดพักเกม: หยุดนาฬิกาไว้ชั่วคราว จำเวลาที่เหลือไว้ ผู้เล่นลง/จั่วไม่ได้จนกว่าจะกดเล่นต่อ
+  pauseGame() {
+    if (this.status !== 'playing') throw new Error('เกมยังไม่เริ่มหรือจบไปแล้ว');
+    if (this.paused) throw new Error('เกมพักอยู่แล้ว');
+    this.pausedRemainingMs = this.turnEndsAt ? Math.max(0, this.turnEndsAt - Date.now()) : TURN_SECONDS * 1000;
+    this.clearTurnTimer();
+    this.paused = true;
+    this.emitUpdate('gamePaused', {});
+  }
+
+  // ครูกดเล่นต่อ: นับเวลาต่อจากที่ค้างไว้ตอนกดพัก ไม่รีเซ็ตเป็น 40 วิใหม่
+  resumeGame() {
+    if (this.status !== 'playing') throw new Error('เกมยังไม่เริ่มหรือจบไปแล้ว');
+    if (!this.paused) throw new Error('เกมไม่ได้พักอยู่');
+    const remaining = this.pausedRemainingMs != null ? this.pausedRemainingMs : TURN_SECONDS * 1000;
+    this.paused = false;
+    this.pausedRemainingMs = null;
+    this.turnEndsAt = Date.now() + remaining;
+    this.turnTimer = setTimeout(() => this.handleTimeout(), remaining);
+    this.emitUpdate('gameResumed', {});
+  }
+
+  // ครูกดจบเกมก่อนเวลา: จัดอันดับเท่าที่ทำได้ ณ ตอนนั้นแล้วจบเลย (ใช้ตรรกะเดียวกับ endGame() ตอน deadlock)
+  forceEndGame() {
+    if (this.status !== 'playing') throw new Error('เกมยังไม่เริ่มหรือจบไปแล้ว');
+    this.paused = false;
+    this.endGame();
+  }
+
   drawFromPile() {
     if (this.drawPile.length === 0) return null;
     return this.drawPile.pop();
   }
 
-  // หมดเวลา 30 วิ โดยยังไม่ลงคำ -> บังคับจั่ว 1 ใบเป็นโทษ จบเทิร์นทันที ไม่มีโอกาสลง
+  // หมดเวลา โดยยังไม่ลงคำ -> บังคับจั่ว 1 ใบเป็นโทษ จบเทิร์นทันที ไม่มีโอกาสลง
   handleTimeout() {
-    if (this.status !== 'playing') return;
+    if (this.status !== 'playing' || this.paused) return;
     const team = this.currentTeam();
     if (!team) return;
     if (team.hand.length >= MAX_HAND_SIZE) {
@@ -137,7 +189,7 @@ class GameRoom {
     this.advanceTurn();
   }
 
-  // ผู้เล่นกดจั่วเองระหว่างเทิร์น (ทางตัน) - ไม่ใช่โทษ นาฬิกาเดินต่อรวม 30 วิ ไม่รีเซ็ต
+  // ผู้เล่นกดจั่วเองระหว่างเทิร์น (ทางตัน) - ไม่ใช่โทษ นาฬิกาเดินต่อรวมเวลาเดิม ไม่รีเซ็ต
   // ถาดมี 15 ช่อง: ถ้าถาดเต็มอยู่แล้ว (15) และยังต้องจั่วอีก แปลว่าจนตรอกจริง ๆ -> แพ้ทันที
   // แต่ถ้าจั่วแล้วพอดีทำให้ครบ 15 (ยังไม่เกิน) ทีมยังลงคำจากมือ 15 ใบนั้นได้ตามปกติ ไม่ถือว่าแพ้ทันที
   voluntaryDraw(teamId) {
@@ -168,6 +220,7 @@ class GameRoom {
 
   assertTurn(teamId) {
     if (this.status !== 'playing') throw new Error('เกมยังไม่เริ่มหรือจบไปแล้ว');
+    if (this.paused) throw new Error('เกมหยุดชั่วคราวอยู่ กรุณารอครู');
     const team = this.currentTeam();
     if (!team || team.id !== teamId) throw new Error('ยังไม่ถึงตาทีมนี้');
   }
@@ -178,7 +231,7 @@ class GameRoom {
     const team = this.currentTeam();
     if (!team.hand.includes(tileId)) throw new Error('ทีมนี้ไม่มีคำนี้ในมือ');
 
-    const tile = tileById(tileId);
+    const tile = this.tileById(tileId);
     const isBlank = tile.type === 'BLANK';
 
     let orientation = 'normal';
@@ -265,7 +318,8 @@ class GameRoom {
 
   endGame() {
     // ถ้าทีมที่เหลือถูกคัดออกหมดก่อนจะหาที่ 1-2-3 ได้ครบ (deadlock/โชคร้ายทั้งกระดาน)
-    // ให้จัดอันดับที่เหลือด้วยทีมที่มีเบี้ยในมือน้อยที่สุด (ใกล้ชนะที่สุด) เพื่อให้เกมจบแบบมีผลสรุปเสมอ
+    // หรือครูกดจบเกมก่อนเวลา ให้จัดอันดับที่เหลือด้วยทีมที่มีเบี้ยในมือน้อยที่สุด (ใกล้ชนะที่สุด)
+    // เพื่อให้เกมจบแบบมีผลสรุปเสมอ
     if (this.podium.length < PODIUM_SIZE) {
       const unranked = this.teams
         .filter((t) => t.rank === null)
@@ -277,14 +331,20 @@ class GameRoom {
       }
     }
     this.status = 'podium';
+    this.paused = false;
     this.clearTurnTimer();
     this.emitUpdate('gameEnded', { podium: this.podium });
   }
 
   publicState(forTeamId) {
+    const activeSet = WORD_SETS.find((s) => s.id === this.wordSetId);
     return {
       code: this.code,
       status: this.status,
+      paused: this.paused,
+      wordSetId: this.wordSetId,
+      wordSetName: activeSet ? activeSet.name : null,
+      availableWordSets: this.status === 'lobby' ? listWordSets() : undefined,
       teams: this.teams.map((t) => ({
         id: t.id,
         name: t.name,
@@ -296,8 +356,8 @@ class GameRoom {
       turnEndsAt: this.turnEndsAt,
       chain: this.chain.map((c) => ({
         tileId: c.tileId,
-        word: tileById(c.tileId).word,
-        type: tileById(c.tileId).type,
+        word: this.tileById(c.tileId).word,
+        type: this.tileById(c.tileId).type,
         orientation: c.orientation,
         slotType: c.slotType,
       })),
@@ -305,10 +365,10 @@ class GameRoom {
       drawPileCount: this.drawPile.length,
       podium: this.podium.map((id) => this.teams.find((t) => t.id === id)),
       myHand: forTeamId
-        ? (this.teams.find((t) => t.id === forTeamId) ? this.teams.find((t) => t.id === forTeamId).hand : []).map((id) => tileById(id))
+        ? (this.teams.find((t) => t.id === forTeamId) ? this.teams.find((t) => t.id === forTeamId).hand : []).map((id) => this.tileById(id))
         : undefined,
     };
   }
 }
 
-module.exports = { GameRoom, WORDBANK, TURN_SECONDS, START_HAND_SIZE, MAX_HAND_SIZE, MAX_TEAMS, PODIUM_SIZE };
+module.exports = { GameRoom, WORD_SETS, listWordSets, TURN_SECONDS, START_HAND_SIZE, MAX_HAND_SIZE, MAX_TEAMS, PODIUM_SIZE };
