@@ -15,6 +15,8 @@ const START_HAND_SIZE = 10;
 const MAX_HAND_SIZE = 15; // ครบ 15 = แพ้ (ถูกคัดออก)
 const MAX_TEAMS = 10;
 const PODIUM_SIZE = 3; // จบเกมเมื่อหาที่ 1-2-3 ได้ครบ
+const SKIP_LIMIT = 3; // ข้ามตาได้ทีมละ 3 ครั้งต่อเกม
+const CHANGE_LIMIT = 3; // เปลี่ยนคำบนกระดานได้ทีมละ 3 ครั้งต่อเกม
 
 function shuffle(arr) {
   const a = arr.slice();
@@ -75,7 +77,7 @@ class GameRoom {
     if (this.status !== 'lobby') throw new Error('เกมเริ่มไปแล้ว เข้าร่วมไม่ได้');
     if (this.teams.length >= MAX_TEAMS) throw new Error('ทีมเต็มแล้ว (สูงสุด 10 ทีม)');
     const id = 'team_' + Math.random().toString(36).slice(2, 9);
-    const team = { id, name, hand: [], eliminated: false, rank: null };
+    const team = { id, name, hand: [], eliminated: false, rank: null, skipsUsed: 0, changesUsed: 0 };
     this.teams.push(team);
     this.emitUpdate('lobbyUpdate');
     return team;
@@ -205,6 +207,45 @@ class GameRoom {
     team.hand.push(drawn);
     this.emitUpdate('voluntaryDraw', { teamId, drawnTileId: drawn });
     return drawn;
+  }
+
+  // ตัวช่วย "ข้าม": ขอผ่านตานี้ไปเลย ไม่มีโทษใด ๆ (ไม่จั่ว ไม่เสียเบี้ย) จบเทิร์นทันที
+  // ใช้ได้ทีมละไม่เกิน SKIP_LIMIT ครั้งต่อเกม
+  skipTurn(teamId) {
+    this.assertTurn(teamId);
+    const team = this.currentTeam();
+    if (team.skipsUsed >= SKIP_LIMIT) throw new Error(`ใช้สิทธิ์ข้ามครบ ${SKIP_LIMIT} ครั้งแล้ว`);
+    team.skipsUsed++;
+    this.emitUpdate('turnSkipped', { teamId, skipsRemaining: SKIP_LIMIT - team.skipsUsed });
+    this.advanceTurn();
+  }
+
+  // ตัวช่วย "เปลี่ยนคำ": ดึงเบี้ยตัวสุดท้ายบนกระดานออก (คืนกลับกองกลางแบบสุ่ม) แล้วดึงเบี้ยใหม่จากกองกลาง
+  // มาวางแทนเป็นปลายเปิดใหม่ทันที ทีมเดิมยังลงคำในเทิร์นเดียวกันต่อได้เลย (นาฬิกาเดินต่อ ไม่จบเทิร์น)
+  // ใช้ได้ทีมละไม่เกิน CHANGE_LIMIT ครั้งต่อเกม
+  changeBoardWord(teamId) {
+    this.assertTurn(teamId);
+    const team = this.currentTeam();
+    if (team.changesUsed >= CHANGE_LIMIT) throw new Error(`ใช้สิทธิ์เปลี่ยนคำครบ ${CHANGE_LIMIT} ครั้งแล้ว`);
+    if (this.drawPile.length === 0) throw new Error('กองกลางหมดแล้ว เปลี่ยนคำไม่ได้');
+
+    const oldLast = this.chain.pop();
+    this.drawPile.push(oldLast.tileId);
+    this.drawPile = shuffle(this.drawPile); // สับกลับเข้ากองแบบสุ่ม กันเดาได้ว่าจะจั่วโดนใบเดิมทันที
+
+    const newTileId = this.drawFromPile();
+    const newTile = this.tileById(newTileId);
+    const isBlank = newTile.type === 'BLANK';
+    this.chain.push({ tileId: newTileId, orientation: 'normal', slotType: newTile.type, teamId });
+    this.openEnd = isBlank ? 'ANY' : newTile.syllables[1];
+
+    team.changesUsed++;
+    this.emitUpdate('boardWordChanged', {
+      teamId,
+      newWord: isBlank ? null : newTile.word,
+      changesRemaining: CHANGE_LIMIT - team.changesUsed,
+    });
+    // หมายเหตุ: ไม่เรียก advanceTurn() ตรงนี้ เพราะทีมเดิมยังมีสิทธิ์ลงคำต่อในเทิร์นเดียวกัน (เหมือนจั่วเอง)
   }
 
   // ใช้ตอนทีมต้องจั่ว (โทษ หรือ จั่วเอง) แต่ถาด 15 ช่องเต็มอยู่แล้ว ไม่มีที่ใส่ -> แพ้/ถูกคัดออก
@@ -351,6 +392,8 @@ class GameRoom {
         handCount: t.hand.length,
         eliminated: t.eliminated,
         rank: t.rank,
+        skipsRemaining: SKIP_LIMIT - t.skipsUsed,
+        changesRemaining: CHANGE_LIMIT - t.changesUsed,
       })),
       currentTeamId: this.status === 'playing' ? (this.currentTeam() ? this.currentTeam().id : null) : null,
       turnEndsAt: this.turnEndsAt,
@@ -372,4 +415,4 @@ class GameRoom {
   }
 }
 
-module.exports = { GameRoom, WORD_SETS, listWordSets, TURN_SECONDS, START_HAND_SIZE, MAX_HAND_SIZE, MAX_TEAMS, PODIUM_SIZE };
+module.exports = { GameRoom, WORD_SETS, listWordSets, TURN_SECONDS, START_HAND_SIZE, MAX_HAND_SIZE, MAX_TEAMS, PODIUM_SIZE, SKIP_LIMIT, CHANGE_LIMIT };

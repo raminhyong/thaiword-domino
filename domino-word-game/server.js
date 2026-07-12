@@ -194,6 +194,28 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('player:skipTurn', (_payload, cb) => {
+    try {
+      const room = getRoomOrThrow(socket.data.code);
+      room.skipTurn(socket.data.teamId);
+      cb && cb({ ok: true });
+      broadcastRoom(room);
+    } catch (e) {
+      cb && cb({ ok: false, error: e.message });
+    }
+  });
+
+  socket.on('player:changeBoardWord', (_payload, cb) => {
+    try {
+      const room = getRoomOrThrow(socket.data.code);
+      room.changeBoardWord(socket.data.teamId);
+      cb && cb({ ok: true });
+      broadcastRoom(room);
+    } catch (e) {
+      cb && cb({ ok: false, error: e.message });
+    }
+  });
+
   socket.on('disconnect', () => {
     // ไม่ลบทีมออกทันที เผื่อผู้เล่นแค่หลุดเน็ตแล้วต่อใหม่ (rejoin ด้วย teamId ที่เก็บฝั่ง client)
   });
