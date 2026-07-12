@@ -83,17 +83,33 @@ input[type=text]:focus{ border-color:var(--blue); }
   scroll-behavior:smooth;
 }
 .domino-tile{
-  flex:0 0 auto; min-width:110px; background:white; border-radius:16px;
-  padding:12px 16px; text-align:center; box-shadow:var(--shadow);
-  border:3px solid #eee; font-weight:700; font-size:1.15rem;
+  flex:0 0 auto; min-width:150px; background:white; border-radius:16px;
+  padding:10px 8px; text-align:center; box-shadow:var(--shadow);
+  border:3px solid #eee; font-weight:700; font-size:1.05rem;
   display:flex; flex-direction:column; gap:4px;
 }
 .domino-tile.type-ซ้อน{ border-color:var(--blue); }
 .domino-tile.type-ประสม{ border-color:var(--pink); }
 .domino-tile.type-BLANK{ border-color:var(--purple); background:#f6f1ff; }
 .domino-tile .tag{ font-size:.7rem; font-weight:700; color:#999; }
-.domino-tile.flip{ transform:scaleX(-1); }
-.domino-tile.flip span.word-text{ display:inline-block; transform:scaleX(-1); }
+/* แสดงเบี้ยแบบโดมิโนจริง 2 ฝั่ง: ฝั่งซ้ายต่อกับเบี้ยก่อนหน้า ฝั่งขวาคือปลายเปิดให้ต่อถัดไป */
+.domino-halves{
+  display:flex; align-items:center; justify-content:center; gap:0;
+}
+.domino-halves .half{
+  flex:1; padding:4px 2px; word-break:break-word;
+}
+.domino-halves .divider{
+  width:2px; align-self:stretch; background:#e0e0e0; margin:0 4px;
+}
+.domino-halves .half.open-end{
+  color:var(--pink-dark); background:#fff0f5; border-radius:8px;
+  animation: openEndPulse 1.1s infinite;
+}
+@keyframes openEndPulse{
+  0%,100%{ background:#fff0f5; }
+  50%{ background:#ffd6e4; }
+}
 
 /* ตาราง 15 ช่องแบบถาดจริง (10 คำ + 5 ช่องว่างเผื่อจั่วเพิ่ม) เห็นครบทุกใบพร้อมกันบนมือถือ ไม่ต้องเลื่อน */
 .hand-grid{

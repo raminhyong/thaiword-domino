@@ -140,11 +140,25 @@
     });
   }
 
-  function renderChainTile(c) {
-    const flipCls = c.orientation === 'flip' ? 'flip' : '';
-    return `<div class="domino-tile type-${c.type} ${flipCls}">
-      <span class="tag">${c.type === 'BLANK' ? 'BLANK' : c.type}</span>
-      <span class="word-text">${c.type === 'BLANK' ? '⭐' : escapeHtml(c.word)}</span>
+  // แสดงเบี้ยแบบโดมิโนจริง: แบ่ง 2 ฝั่ง ฝั่งซ้าย = พยางค์ที่ต่อกับเบี้ยก่อนหน้า, ฝั่งขวา = พยางค์ที่เปิดให้ทีมถัดไปต่อ
+  // ถ้า orientation เป็น 'flip' ต้องสลับตำแหน่งพยางค์ (เพราะพยางค์ที่ใช้ต่อคือพยางค์หลังของคำ ไม่ใช่พยางค์แรก)
+  function renderChainTile(c, isLast) {
+    if (c.type === 'BLANK' || !c.syllables) {
+      return `<div class="domino-tile type-BLANK">
+        <span class="tag">BLANK</span>
+        <div class="domino-halves"><span class="half">⭐ อะไรก็ได้</span></div>
+      </div>`;
+    }
+    const [leftSyl, rightSyl] = c.orientation === 'flip'
+      ? [c.syllables[1], c.syllables[0]]
+      : [c.syllables[0], c.syllables[1]];
+    return `<div class="domino-tile type-${c.type}">
+      <span class="tag">${c.type}</span>
+      <div class="domino-halves">
+        <span class="half">${escapeHtml(leftSyl)}</span>
+        <span class="divider"></span>
+        <span class="half ${isLast ? 'open-end' : ''}">${escapeHtml(rightSyl)}</span>
+      </div>
     </div>`;
   }
 
@@ -173,7 +187,7 @@
           <button class="btn ${state.paused ? 'btn-green' : 'btn-yellow'}" id="pauseBtn">${state.paused ? '▶️ เล่นต่อ' : '⏸ พักเกม'}</button>
           <button class="btn btn-pink" id="endBtn">🏁 จบเกมนี้</button>
         </div>
-        <div class="chain-track" id="chainTrack">${state.chain.map(renderChainTile).join('')}</div>
+        <div class="chain-track" id="chainTrack">${state.chain.map((c, i) => renderChainTile(c, i === state.chain.length - 1)).join('')}</div>
         <div class="row" style="max-width:1000px;">${teamsHtml}</div>
         <p class="subtle">กองกลางเหลือ ${state.drawPileCount} ใบ</p>
       </div>
