@@ -358,6 +358,7 @@ class GameRoom {
         tileId: c.tileId,
         word: this.tileById(c.tileId).word,
         type: this.tileById(c.tileId).type,
+        syllables: this.tileById(c.tileId).syllables || null, // null สำหรับ BLANK (ไม่มีพยางค์จริง)
         orientation: c.orientation,
         slotType: c.slotType,
       })),
