@@ -38,7 +38,15 @@
 
   function fetchQr() {
     socket.emit('host:qrcode', { code, joinUrl: joinUrl(code) }, (res) => {
-      if (res.ok) qrDataUrl = res.dataUrl;
+      if (res.ok) {
+        qrDataUrl = res.dataUrl;
+      } else {
+        qrDataUrl = 'ERROR';
+        console.error('สร้าง QR ไม่สำเร็จ:', res.error);
+      }
+      // จุดสำคัญ: ต้องสั่ง re-render ทันทีตรงนี้ ไม่งั้น QR จะค้างที่ "กำลังสร้าง QR..."
+      // จนกว่าจะมี event 'state' รอบใหม่มาจากเซิร์ฟเวอร์ (เช่น รอทีมแรกเข้าร่วม) ซึ่งอาจไม่มาเลย
+      if (latestState && latestState.status === 'lobby') renderLobby(latestState);
     });
   }
 
@@ -65,11 +73,23 @@
       ? state.teams.map((t) => `<div class="team-chip">🙋 ${escapeHtml(t.name)}</div>`).join('')
       : '<p class="subtle">ยังไม่มีทีมเข้าร่วม... สแกน QR ด้านล่างเพื่อเข้าร่วม</p>';
 
+    let qrHtml;
+    if (qrDataUrl === 'ERROR') {
+      qrHtml = `<div style="padding:20px;">
+        <p style="color:#ef5f8f; font-weight:700;">สร้าง QR ไม่สำเร็จ 😢</p>
+        <button class="btn btn-blue" id="retryQrBtn">ลองใหม่</button>
+      </div>`;
+    } else if (qrDataUrl) {
+      qrHtml = `<img src="${qrDataUrl}" width="260" height="260"/>`;
+    } else {
+      qrHtml = 'กำลังสร้าง QR...';
+    }
+
     app.appendChild(el(`
       <div class="center-screen">
         <h1>🁫 โดมิโนคำ 🁫</h1>
         <div class="room-code">${state.code}</div>
-        <div class="qr-box">${qrDataUrl ? `<img src="${qrDataUrl}" width="260" height="260"/>` : 'กำลังสร้าง QR...'}</div>
+        <div class="qr-box">${qrHtml}</div>
         <p class="subtle">สแกน QR หรือเข้า ${location.origin}/player.html แล้วกรอกรหัสห้อง</p>
         <div class="row" style="max-width:640px;">${teamsHtml}</div>
         <p class="subtle">${state.teams.length} / 10 ทีม</p>
@@ -77,6 +97,8 @@
       </div>
     `));
     document.getElementById('startBtn').onclick = startGame;
+    const retryBtn = document.getElementById('retryQrBtn');
+    if (retryBtn) retryBtn.onclick = () => { qrDataUrl = null; renderLobby(state); fetchQr(); };
   }
 
   function renderChainTile(c) {
