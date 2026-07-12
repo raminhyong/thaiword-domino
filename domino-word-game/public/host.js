@@ -67,6 +67,26 @@
     });
   }
 
+  function selectWordSet(setId) {
+    socket.emit('host:selectWordSet', { code, setId }, (res) => {
+      if (!res.ok) alert(res.error);
+    });
+  }
+
+  function togglePause(isPaused) {
+    const event = isPaused ? 'host:resumeGame' : 'host:pauseGame';
+    socket.emit(event, { code }, (res) => {
+      if (!res.ok) alert(res.error);
+    });
+  }
+
+  function endGameNow() {
+    if (!confirm('แน่ใจนะว่าจะจบเกมนี้ตอนนี้เลย? (จะจัดอันดับจากเบี้ยที่เหลือให้ทันที)')) return;
+    socket.emit('host:endGame', { code }, (res) => {
+      if (!res.ok) alert(res.error);
+    });
+  }
+
   function renderLobby(state) {
     app.innerHTML = '';
     const teamsHtml = state.teams.length
@@ -85,12 +105,28 @@
       qrHtml = 'กำลังสร้าง QR...';
     }
 
+    const sets = state.availableWordSets || [];
+    const setButtonsHtml = sets
+      .map((s) => {
+        const isSelected = s.id === state.wordSetId;
+        return `<button class="btn ${isSelected ? 'btn-green' : 'btn-blue'}" data-set-id="${s.id}" style="opacity:${isSelected ? '1' : '.65'};">
+          ${isSelected ? '✅ ' : ''}${escapeHtml(s.name)}
+        </button>`;
+      })
+      .join('');
+
     app.appendChild(el(`
       <div class="center-screen">
         <h1>🁫 โดมิโนคำ 🁫</h1>
         <div class="room-code">${state.code}</div>
         <div class="qr-box">${qrHtml}</div>
         <p class="subtle">สแกน QR หรือเข้า ${location.origin}/player.html แล้วกรอกรหัสห้อง</p>
+
+        <div class="card" style="text-align:center;">
+          <p class="subtle" style="margin-top:0;">เลือกชุดคำที่จะใช้เล่น</p>
+          <div class="row">${setButtonsHtml}</div>
+        </div>
+
         <div class="row" style="max-width:640px;">${teamsHtml}</div>
         <p class="subtle">${state.teams.length} / 10 ทีม</p>
         <button class="btn btn-green" id="startBtn" ${state.teams.length < 2 ? 'disabled' : ''}>เริ่มเกม!</button>
@@ -99,6 +135,9 @@
     document.getElementById('startBtn').onclick = startGame;
     const retryBtn = document.getElementById('retryQrBtn');
     if (retryBtn) retryBtn.onclick = () => { qrDataUrl = null; renderLobby(state); fetchQr(); };
+    document.querySelectorAll('[data-set-id]').forEach((btn) => {
+      btn.onclick = () => selectWordSet(btn.dataset.setId);
+    });
   }
 
   function renderChainTile(c) {
@@ -125,8 +164,14 @@
     app.appendChild(el(`
       <div class="center-screen" style="justify-content:flex-start; padding-top:24px;">
         <div class="row" style="justify-content:space-between; width:100%; max-width:1000px;">
-          <h2>ห้อง ${state.code}</h2>
-          <div class="timer-badge" id="timerBadge">30</div>
+          <h2>ห้อง ${state.code} · ${escapeHtml(state.wordSetName || '')}</h2>
+          <div class="row">
+            ${state.paused ? '<span class="timer-badge" style="background:var(--purple);">⏸ พัก</span>' : `<div class="timer-badge" id="timerBadge">40</div>`}
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn ${state.paused ? 'btn-green' : 'btn-yellow'}" id="pauseBtn">${state.paused ? '▶️ เล่นต่อ' : '⏸ พักเกม'}</button>
+          <button class="btn btn-pink" id="endBtn">🏁 จบเกมนี้</button>
         </div>
         <div class="chain-track" id="chainTrack">${state.chain.map(renderChainTile).join('')}</div>
         <div class="row" style="max-width:1000px;">${teamsHtml}</div>
@@ -137,9 +182,12 @@
     const track = document.getElementById('chainTrack');
     track.scrollLeft = track.scrollWidth;
 
+    document.getElementById('pauseBtn').onclick = () => togglePause(state.paused);
+    document.getElementById('endBtn').onclick = endGameNow;
+
     clearInterval(tickInterval);
     tickInterval = setInterval(() => {
-      if (!latestState || !latestState.turnEndsAt) return;
+      if (!latestState || latestState.paused || !latestState.turnEndsAt) return;
       const remain = Math.max(0, Math.ceil((latestState.turnEndsAt - Date.now()) / 1000));
       const badge = document.getElementById('timerBadge');
       if (badge) {
