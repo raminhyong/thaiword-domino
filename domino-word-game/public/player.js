@@ -2,6 +2,8 @@
   const app = document.getElementById('app');
   const socket = io();
 
+  const MAX_HAND_SIZE = 15; // ต้องตรงกับ MAX_HAND_SIZE ใน gameEngine.js (ถาดมี 15 ช่องเสมอ)
+
   const urlCode = new URLSearchParams(location.search).get('code') || '';
   let session = loadSession();
   let latestState = null;
@@ -97,19 +99,23 @@
   // ---------- หน้าเล่นเกม ----------
   function renderPlaying(state) {
     const me = state.teams.find((t) => t.id === session.teamId);
-    const isMyTurn = state.currentTeamId === session.teamId;
+    const isMyTurn = state.currentTeamId === session.teamId && !state.paused;
     const hand = state.myHand || [];
     const lastTile = state.chain[state.chain.length - 1];
     const openEndText = state.openEnd === 'ANY' ? 'อะไรก็ได้ (BLANK) ⭐' : state.openEnd;
+    const emptySlotCount = Math.max(0, MAX_HAND_SIZE - hand.length);
 
     app.innerHTML = '';
     app.appendChild(el(`
       <div class="center-screen" style="justify-content:flex-start; padding-top:16px; gap:10px;">
         <div class="row" style="justify-content:space-between; width:100%;">
           <h3>ทีม ${escapeHtml(me ? me.name : '')}</h3>
-          <div class="timer-badge" id="timerBadge">30</div>
+          ${state.paused ? '<span class="timer-badge" style="background:var(--purple);">⏸ พัก</span>' : '<div class="timer-badge" id="timerBadge">40</div>'}
         </div>
-        <p style="font-weight:800;">${isMyTurn ? '🟢 ตาของทีมเรา!' : '⌛ รอตาทีมอื่น...'}</p>
+        ${state.paused
+          ? '<div class="card" style="background:#f6f1ff; text-align:center; padding:14px;"><p style="font-weight:800; margin:0;">⏸ ครูหยุดเกมชั่วคราว รอสักครู่นะ</p></div>'
+          : `<p style="font-weight:800;">${isMyTurn ? '🟢 ตาของทีมเรา!' : '⌛ รอตาทีมอื่น...'}</p>`
+        }
         <div class="card" style="text-align:center; padding:12px;">
           <div class="subtle">คำล่าสุดบนกระดาน</div>
           <div style="font-size:1.4rem; font-weight:800;">${lastTile ? escapeHtml(lastTile.word || '⭐ BLANK') : '-'}</div>
@@ -122,14 +128,14 @@
           <div class="drop-zone ประสม" data-zone="ประสม">คำประสม</div>
         </div>
 
-        <div class="hand-row" id="handRow"></div>
+        <div class="hand-grid" id="handGrid"></div>
 
         <button class="btn btn-yellow" id="drawBtn" ${isMyTurn ? '' : 'disabled'}>🎲 จั่วคำเพิ่ม (มือไม่พอ/ทางตัน)</button>
-        <p class="subtle">มือของเรา ${hand.length} ใบ · กองกลางเหลือ ${state.drawPileCount} ใบ</p>
+        <p class="subtle">มือของเรา ${hand.length}/${MAX_HAND_SIZE} ใบ · กองกลางเหลือ ${state.drawPileCount} ใบ</p>
       </div>
     `));
 
-    const handRow = document.getElementById('handRow');
+    const handGrid = document.getElementById('handGrid');
     hand.forEach((tile) => {
       const tileEl = el(`
         <div class="hand-tile type-${tile.type}" data-tile-id="${tile.id}" data-type="${tile.type}">
@@ -137,8 +143,11 @@
         </div>
       `);
       if (isMyTurn) attachDrag(tileEl, tile);
-      handRow.appendChild(tileEl);
+      handGrid.appendChild(tileEl);
     });
+    for (let i = 0; i < emptySlotCount; i++) {
+      handGrid.appendChild(el(`<div class="hand-tile empty-slot"></div>`));
+    }
 
     document.getElementById('drawBtn').onclick = () => {
       socket.emit('player:voluntaryDraw', {}, (res) => {
@@ -148,7 +157,7 @@
 
     clearInterval(tickInterval);
     tickInterval = setInterval(() => {
-      if (!latestState || !latestState.turnEndsAt) return;
+      if (!latestState || latestState.paused || !latestState.turnEndsAt) return;
       const remain = Math.max(0, Math.ceil((latestState.turnEndsAt - Date.now()) / 1000));
       const badge = document.getElementById('timerBadge');
       if (badge) {
@@ -161,12 +170,9 @@
   // ---------- ลากเบี้ยด้วย Pointer Events (ใช้ได้ทั้งเมาส์และนิ้วมือถือ) ----------
   function attachDrag(tileEl, tile) {
     let ghost = null;
-    let startX = 0, startY = 0;
 
     tileEl.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      startX = e.clientX;
-      startY = e.clientY;
       tileEl.classList.add('selected');
       ghost = tileEl.cloneNode(true);
       ghost.classList.add('dragging');
@@ -250,6 +256,10 @@
     } else if (event === 'teamFinished') {
       const t = latestState && latestState.teams.find((x) => x.id === payload.teamId);
       showToast(`🎉 ทีม${t ? t.name : ''} ได้อันดับที่ ${payload.rank}!`, 'ok');
+    } else if (event === 'gamePaused') {
+      showToast('ครูหยุดเกมชั่วคราว ⏸', 'bad');
+    } else if (event === 'gameResumed') {
+      showToast('เล่นต่อแล้ว! ▶️', 'ok');
     }
   });
 

@@ -95,20 +95,26 @@ input[type=text]:focus{ border-color:var(--blue); }
 .domino-tile.flip{ transform:scaleX(-1); }
 .domino-tile.flip span.word-text{ display:inline-block; transform:scaleX(-1); }
 
-.hand-row{
-  display:flex; gap:10px; overflow-x:auto; padding:14px 8px; width:100%;
+/* ตาราง 15 ช่องแบบถาดจริง (10 คำ + 5 ช่องว่างเผื่อจั่วเพิ่ม) เห็นครบทุกใบพร้อมกันบนมือถือ ไม่ต้องเลื่อน */
+.hand-grid{
+  display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; width:100%; padding:6px 4px;
 }
 .hand-tile{
-  flex:0 0 auto; min-width:96px; background:white; border-radius:16px;
-  padding:14px 10px; text-align:center; box-shadow:var(--shadow);
-  border:3px solid #eee; font-weight:700; touch-action:none; user-select:none;
-  cursor:grab;
+  background:white; border-radius:14px; min-height:64px;
+  display:flex; align-items:center; justify-content:center;
+  padding:8px 6px; text-align:center; box-shadow:var(--shadow);
+  border:3px solid #eee; font-weight:700; font-size:.92rem; line-height:1.15;
+  touch-action:none; user-select:none; cursor:grab; word-break:break-word;
 }
 .hand-tile.type-ซ้อน{ border-color:var(--blue); }
 .hand-tile.type-ประสม{ border-color:var(--pink); }
 .hand-tile.type-BLANK{ border-color:var(--purple); background:#f6f1ff; }
 .hand-tile.selected{ transform:translateY(-8px); box-shadow:0 10px 0 rgba(0,0,0,.12); }
-.hand-tile.dragging{ position:fixed; z-index:999; pointer-events:none; opacity:.9; }
+.hand-tile.dragging{ position:fixed; z-index:999; pointer-events:none; opacity:.9; width:auto !important; }
+.hand-tile.empty-slot{
+  background:repeating-linear-gradient(45deg, #f6f6f6, #f6f6f6 8px, #eeeeee 8px, #eeeeee 16px);
+  border:3px dashed #ddd; box-shadow:none; cursor:default;
+}
 
 .drop-zones{ display:flex; gap:14px; width:100%; }
 .drop-zone{
