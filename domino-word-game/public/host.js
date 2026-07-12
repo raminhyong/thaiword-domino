@@ -168,9 +168,12 @@
       .map((t) => {
         const activeCls = t.id === state.currentTeamId ? 'active' : '';
         const elimCls = t.eliminated ? 'eliminated' : '';
-        return `<div class="team-chip ${activeCls} ${elimCls}">
-          <span>${t.id === state.currentTeamId ? '👉 ' : ''}${escapeHtml(t.name)}</span>
-          <span class="count">${t.handCount}</span>
+        return `<div class="team-chip ${activeCls} ${elimCls}" style="flex-direction:column; align-items:flex-start; gap:2px;">
+          <div style="display:flex; justify-content:space-between; width:100%; gap:8px;">
+            <span>${t.id === state.currentTeamId ? '👉 ' : ''}${escapeHtml(t.name)}</span>
+            <span class="count">${t.handCount}</span>
+          </div>
+          <span style="font-size:.68rem; font-weight:600; opacity:.7;">⏭${t.skipsRemaining} · 🔄${t.changesRemaining}</span>
         </div>`;
       })
       .join('');

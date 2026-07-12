@@ -131,6 +131,10 @@
         <div class="hand-grid" id="handGrid"></div>
 
         <button class="btn btn-yellow" id="drawBtn" ${isMyTurn ? '' : 'disabled'}>🎲 จั่วคำเพิ่ม (มือไม่พอ/ทางตัน)</button>
+        <div class="row">
+          <button class="btn btn-blue" id="skipBtn" ${isMyTurn && me && me.skipsRemaining > 0 ? '' : 'disabled'}>⏭ ข้าม (${me ? me.skipsRemaining : 3}/3)</button>
+          <button class="btn btn-pink" id="changeBtn" ${isMyTurn && me && me.changesRemaining > 0 ? '' : 'disabled'}>🔄 เปลี่ยนคำ (${me ? me.changesRemaining : 3}/3)</button>
+        </div>
         <p class="subtle">มือของเรา ${hand.length}/${MAX_HAND_SIZE} ใบ · กองกลางเหลือ ${state.drawPileCount} ใบ</p>
       </div>
     `));
@@ -151,6 +155,20 @@
 
     document.getElementById('drawBtn').onclick = () => {
       socket.emit('player:voluntaryDraw', {}, (res) => {
+        if (!res.ok) showToast(res.error, 'bad');
+      });
+    };
+
+    document.getElementById('skipBtn').onclick = () => {
+      if (!confirm('ข้ามตานี้เลยไหม? (ใช้สิทธิ์ 1 ใน 3 ครั้ง)')) return;
+      socket.emit('player:skipTurn', {}, (res) => {
+        if (!res.ok) showToast(res.error, 'bad');
+      });
+    };
+
+    document.getElementById('changeBtn').onclick = () => {
+      if (!confirm('เปลี่ยนคำบนกระดานเลยไหม? (ใช้สิทธิ์ 1 ใน 3 ครั้ง)')) return;
+      socket.emit('player:changeBoardWord', {}, (res) => {
         if (!res.ok) showToast(res.error, 'bad');
       });
     };
@@ -260,6 +278,12 @@
       showToast('ครูหยุดเกมชั่วคราว ⏸', 'bad');
     } else if (event === 'gameResumed') {
       showToast('เล่นต่อแล้ว! ▶️', 'ok');
+    } else if (event === 'turnSkipped') {
+      const t = latestState && latestState.teams.find((x) => x.id === payload.teamId);
+      showToast(`⏭ ทีม${t ? t.name : ''} ขอข้ามตา`, 'ok');
+    } else if (event === 'boardWordChanged') {
+      const t = latestState && latestState.teams.find((x) => x.id === payload.teamId);
+      showToast(`🔄 ทีม${t ? t.name : ''} เปลี่ยนคำบนกระดานใหม่แล้ว!`, 'ok');
     }
   });
 
